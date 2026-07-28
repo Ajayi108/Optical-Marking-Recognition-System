@@ -18,9 +18,12 @@ SCANNED_DIR = APP_ROOT / "scanned_sheets"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 SCANNED_DIR.mkdir(parents=True, exist_ok=True)
 
+# Streamlit page files run from inside pages/, so add the app root for imports.
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from database.database import save_scan
+from omr.alignment import AlignmentError, align_sheet_to_metadata
 from omr.marker_detection import MarkerDetectionError, detect_sheet_markers, draw_marker_preview, markers_to_dict
 
 st.set_page_config(page_title="Scan Sheet | OMR", page_icon="📷", layout="wide")
@@ -39,6 +42,7 @@ def to_rgb(image: np.ndarray) -> np.ndarray:
 
 # Loads metadata from an uploaded JSON file or generated JSON path.
 def load_metadata(uploaded_metadata: Any, selected_metadata: str) -> tuple[dict[str, Any], str]:
+    # Uploaded JSON takes priority so a user can scan sheets from another machine.
     if uploaded_metadata is not None:
         metadata = json.loads(uploaded_metadata.getvalue().decode("utf-8"))
         return metadata, uploaded_metadata.name
@@ -50,28 +54,6 @@ def load_metadata(uploaded_metadata: Any, selected_metadata: str) -> tuple[dict[
     return json.loads(metadata_path.read_text(encoding="utf-8")), metadata_path.name
 
 
-# Validates that the metadata contains alignment information.
-def validate_metadata(metadata: dict[str, Any]) -> None:
-    if "alignment" not in metadata:
-        raise ValueError("The JSON file does not contain alignment metadata.")
-    if "destination_marker_centers_px" not in metadata["alignment"]:
-        raise ValueError("The JSON file does not contain destination marker centers.")
-    if "warp_target_size_px" not in metadata["alignment"]:
-        raise ValueError("The JSON file does not contain a warp target size.")
-    if len(metadata["alignment"]["destination_marker_centers_px"]) != 4:
-        raise ValueError("The JSON file must contain four destination marker centers.")
-
-
-# Aligns a tilted sheet using the four detected ArUco marker centers.
-def align_sheet(image: np.ndarray, source_points: np.ndarray, destination_points: list[list[int]], output_size: list[int]) -> tuple[np.ndarray, np.ndarray]:
-    source = np.asarray(source_points, dtype=np.float32)
-    destination = np.asarray(destination_points, dtype=np.float32)
-    width, height = int(output_size[0]), int(output_size[1])
-    matrix = cv2.getPerspectiveTransform(source, destination)
-    aligned = cv2.warpPerspective(image, matrix, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_CONSTANT, borderValue=(255, 255, 255))
-    return aligned, matrix
-
-
 # Saves an OpenCV image and raises an error when saving fails.
 def save_image(path: Path, image: np.ndarray) -> None:
     saved = cv2.imwrite(str(path), image)
@@ -81,6 +63,7 @@ def save_image(path: Path, image: np.ndarray) -> None:
 
 # Saves scan information for the Review Answers page.
 def save_scan_result(sheet_id: str, original: np.ndarray, preview: np.ndarray, aligned: np.ndarray, metadata: dict[str, Any], metadata_name: str, detection: dict[str, Any], matrix: np.ndarray) -> dict[str, str]:
+    # Use the sheet ID as the stable file stem for original, preview, aligned, and JSON outputs.
     stem = safe_name(sheet_id)
     original_path = SCANNED_DIR / f"{stem}_original.png"
     preview_path = SCANNED_DIR / f"{stem}_markers.png"
@@ -89,8 +72,11 @@ def save_scan_result(sheet_id: str, original: np.ndarray, preview: np.ndarray, a
     save_image(original_path, original)
     save_image(preview_path, preview)
     save_image(aligned_path, aligned)
-    result_data = {"sheet_id": sheet_id, "metadata_name": metadata_name, "original_path": str(original_path), "preview_path": str(preview_path), "aligned_path": str(aligned_path), "detected_ids": detection["detected_ids"], "markers": markers_to_dict(detection["markers"]), "transform_matrix": matrix.round(8).tolist(), "metadata": metadata}
+    # The scan JSON is the bridge from Scan Sheet to Review Answers.
+    result_data = {"sheet_id": sheet_id, "metadata_name": metadata_name, "original_path": str(original_path), "preview_path": str(preview_path), "aligned_path": str(aligned_path), "result_path": str(result_path), "detected_ids": detection["detected_ids"], "markers": markers_to_dict(detection["markers"]), "transform_matrix": matrix.round(8).tolist(), "metadata": metadata}
     result_path.write_text(json.dumps(result_data, indent=2) + "\n", encoding="utf-8")
+    # Store a searchable scan summary alongside the JSON artifact.
+    save_scan(result_data, result_path)
     return {"sheet_id": sheet_id, "original_path": str(original_path), "preview_path": str(preview_path), "aligned_path": str(aligned_path), "result_path": str(result_path), "metadata_name": metadata_name}
 
 
@@ -124,14 +110,13 @@ if scan_clicked:
         if uploaded_image is None:
             raise ValueError("Upload a completed OMR sheet image.")
 
+        # Metadata tells the scanner where markers and bubbles should land after alignment.
         metadata, metadata_name = load_metadata(uploaded_metadata, selected_metadata)
-        validate_metadata(metadata)
         detection = detect_sheet_markers(uploaded_image.getvalue(), require_all=True)
         original = detection["image"]
         preview = draw_marker_preview(original, detection["markers"])
-        destination_points = metadata["alignment"]["destination_marker_centers_px"]
-        output_size = metadata["alignment"]["warp_target_size_px"]
-        aligned, matrix = align_sheet(original, detection["source_centers"], destination_points, output_size)
+        # Marker centers from the photo are warped to the generator's canonical centers.
+        aligned, matrix = align_sheet_to_metadata(original, detection["source_centers"], metadata)
         sheet_id = str(metadata.get("sheet_id", Path(metadata_name).stem))
         saved = save_scan_result(sheet_id, original, preview, aligned, metadata, metadata_name, detection, matrix)
         st.session_state["scan_result"] = saved
@@ -163,6 +148,9 @@ if scan_clicked:
     except ValueError as error:
         st.error(str(error))
 
+    except AlignmentError as error:
+        st.error(str(error))
+
     except OSError as error:
         st.error(str(error))
 
@@ -172,6 +160,7 @@ if scan_clicked:
 saved_scan = st.session_state.get("scan_result")
 
 if saved_scan and Path(saved_scan["aligned_path"]).exists():
+    # Keep the most recent aligned scan visible after Streamlit reruns.
     st.divider()
     st.subheader("Latest aligned scan")
     aligned_image = cv2.imread(saved_scan["aligned_path"], cv2.IMREAD_COLOR)

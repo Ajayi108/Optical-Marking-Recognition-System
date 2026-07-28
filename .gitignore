@@ -1,2 +1,12 @@
-*.pdf
-*.json
+__pycache__/
+*.py[cod]
+.venv/
+
+generated_sheets/*
+!generated_sheets/.gitkeep
+
+scanned_sheets/*
+!scanned_sheets/.gitkeep
+
+database/*.db
+database/*.db-*

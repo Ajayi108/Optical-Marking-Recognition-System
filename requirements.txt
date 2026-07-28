@@ -1,3 +1,4 @@
 streamlit==1.59.2
-opencv-python-headless==5.0.0.93
+opencv-contrib-python-headless==5.0.0.93
+numpy==2.5.1
 reportlab==5.0.0

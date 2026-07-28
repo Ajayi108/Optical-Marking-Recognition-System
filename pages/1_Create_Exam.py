@@ -14,9 +14,11 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = APP_ROOT / "generated_sheets"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Streamlit executes page files directly, so include the project root for imports.
 if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
+from database.database import save_exam
 from sheet_generator.generator import OMRSheetGenerator
 
 st.set_page_config(page_title="Create Exam | OMR", page_icon="➕", layout="wide")
@@ -25,6 +27,7 @@ st.set_page_config(page_title="Create Exam | OMR", page_icon="➕", layout="wide
 # Parses and validates comma-separated answer choices.
 def parse_choices(raw: str) -> tuple[str, ...]:
     choices = tuple(item.strip().upper() for item in raw.split(",") if item.strip())
+    # The sheet layout supports compact multiple-choice labels only.
     if not 2 <= len(choices) <= 5:
         raise ValueError("Enter between 2 and 5 choice labels.")
     if len(set(choices)) != len(choices):
@@ -38,12 +41,14 @@ def parse_choices(raw: str) -> tuple[str, ...]:
 def parse_answer_key(raw: str, num_questions: int, choices: Sequence[str]) -> Mapping[int, str] | None:
     value = raw.strip().upper()
     if not value:
+        # Blank means printable-only sheet; grading can be skipped later.
         return None
 
     valid_choices = set(choices)
     numbered_matches = re.findall(r"(\d+)\s*[:=]\s*([A-Z0-9]+)", value)
 
     if numbered_matches:
+        # Numbered format lets the user provide only explicit question mappings.
         remainder = re.sub(r"\d+\s*[:=]\s*[A-Z0-9]+", "", value)
         remainder = re.sub(r"[\s,;]+", "", remainder)
 
@@ -68,6 +73,7 @@ def parse_answer_key(raw: str, num_questions: int, choices: Sequence[str]) -> Ma
 
         return answer_key
 
+    # Sequential format is shorter, but must include exactly one answer per question.
     sequential = [token for token in re.split(r"[\s,;]+", value) if token]
 
     if len(sequential) != num_questions:
@@ -83,6 +89,7 @@ def parse_answer_key(raw: str, num_questions: int, choices: Sequence[str]) -> Ma
 
 # Stores generated file information between Streamlit reruns.
 def remember_artifacts(pdf_path: Path, metadata_path: Path, sheet_id: str) -> None:
+    # Streamlit reruns after button clicks, so keep generated paths in session state.
     st.session_state["created_exam_artifacts"] = {"pdf_path": str(pdf_path), "metadata_path": str(metadata_path), "sheet_id": sheet_id}
 
 
@@ -121,6 +128,7 @@ generate_clicked = st.button("Generate answer sheet", type="primary", use_contai
 
 if generate_clicked:
     try:
+        # Strip form values once so validation and file naming use the same data.
         clean_title = exam_title.strip()
         clean_exam_id = exam_id.strip()
 
@@ -138,6 +146,8 @@ if generate_clicked:
 
         generator = OMRSheetGenerator(OUTPUT_DIR)
         artifacts = generator.generate(exam_id=clean_exam_id, title=clean_title, num_questions=int(num_questions), choices=choices, answer_key=answer_key, dpi=int(dpi))
+        # Save generated exam metadata now so Results can aggregate from the database.
+        save_exam(json.loads(artifacts.metadata_path.read_text(encoding="utf-8")), artifacts.metadata_path.name)
         remember_artifacts(artifacts.pdf_path, artifacts.metadata_path, artifacts.sheet_id)
         st.success("The ArUco answer sheet and coordinate metadata were generated.")
 
@@ -153,6 +163,7 @@ if generate_clicked:
 saved = st.session_state.get("created_exam_artifacts")
 
 if saved:
+    # Re-read files from disk so download buttons serve the actual generated artifacts.
     pdf_path = Path(saved["pdf_path"])
     metadata_path = Path(saved["metadata_path"])
 
