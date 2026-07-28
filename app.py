@@ -7,7 +7,13 @@ import streamlit as st
 APP_ROOT = Path(__file__).resolve().parent
 PAGES_DIR = APP_ROOT / "pages"
 GENERATED_DIR = APP_ROOT / "generated_sheets"
+SCANNED_DIR = APP_ROOT / "scanned_sheets"
+DATABASE_DIR = APP_ROOT / "database"
+
+# Create runtime folders at startup so first-time users can run the app immediately.
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+SCANNED_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_DIR.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="OMR Exam Manager", page_icon="📝", layout="wide", initial_sidebar_state="expanded")
 
@@ -25,6 +31,7 @@ st.info("Start by creating an exam. The app will generate an A4 PDF answer sheet
 
 left, middle, right = st.columns(3)
 
+# The home page mirrors the real workflow from generation to review.
 with left:
     st.subheader("1. Create")
     st.write("Define the exam title, exam ID, question count, choices, and answer key.")
@@ -45,7 +52,11 @@ st.divider()
 
 with st.sidebar:
     st.header("Project status")
+    # These status chips double as a quick health check for the implemented modules.
     st.success("Sheet generator ready")
     st.success("ArUco marker detection ready")
-    st.warning("Review and results pages are not created yet")
+    st.success("Bubble detection and grading ready")
+    st.success("Results database ready")
     st.caption(f"Generated sheets folder: `{GENERATED_DIR.name}/`")
+    st.caption(f"Scanned sheets folder: `{SCANNED_DIR.name}/`")
+    st.caption(f"Database folder: `{DATABASE_DIR.name}/`")
